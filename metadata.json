@@ -1,0 +1,6 @@
+{
+  "name": "terminal",
+  "description": "Web-based Linux terminal, file manager, background script runner, live resource monitoring, system logs, Telegram bot, and VPN manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
