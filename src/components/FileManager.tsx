@@ -33,7 +33,7 @@ interface FileManagerProps {
 
 export const FileManager: React.FC<FileManagerProps> = ({ token, lang }) => {
   const t = translations[lang];
-  const [currentPath, setCurrentPath] = useState<string>('/var/www');
+  const [currentPath, setCurrentPath] = useState<string>('');
   const [items, setItems] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(true);
 

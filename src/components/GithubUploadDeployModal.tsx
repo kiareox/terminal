@@ -26,7 +26,7 @@ export const GithubUploadDeployModal: React.FC<GithubUploadDeployModalProps> = (
   isOpen,
   onClose,
   onSuccess,
-  defaultPath = '/var/www',
+  defaultPath = '',
   isDeployMode = false,
   initialTaskName = '',
   initialCommand = ''
@@ -52,9 +52,27 @@ export const GithubUploadDeployModal: React.FC<GithubUploadDeployModalProps> = (
     setTaskName(name);
     const folderName = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
     if (folderName) {
-      setTargetPath(`${defaultPath}/${folderName}`);
+      setTargetPath(defaultPath && defaultPath !== '/var/www' ? `${defaultPath}/${folderName}` : folderName);
     } else {
-      setTargetPath(defaultPath);
+      setTargetPath(defaultPath || '');
+    }
+  };
+
+  const handleGithubUrlChange = (url: string) => {
+    setGithubUrl(url);
+    const trimmed = url.trim();
+    if (trimmed) {
+      const match = trimmed.match(/(?:github\.com|raw\.githubusercontent\.com)\/([^\/]+)\/([^\/]+)/);
+      if (match) {
+        let repoName = match[2].replace(/\.git$/, '');
+        if (repoName.includes('/')) repoName = repoName.split('/')[0];
+        if (repoName && (taskName === 'MyServerApp' || !taskName)) {
+          setTaskName(repoName);
+          const folderName = repoName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+          const basePath = defaultPath && defaultPath !== '/var/www' ? defaultPath : '';
+          setTargetPath(basePath ? `${basePath}/${folderName}` : folderName);
+        }
+      }
     }
   };
 
@@ -63,7 +81,8 @@ export const GithubUploadDeployModal: React.FC<GithubUploadDeployModalProps> = (
       const initialName = initialTaskName || 'MyServerApp';
       setTaskName(initialName);
       const folderName = initialName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-      setTargetPath(`${defaultPath}/${folderName}`);
+      const basePath = defaultPath && defaultPath !== '/var/www' ? defaultPath : '';
+      setTargetPath(basePath ? `${basePath}/${folderName}` : folderName);
       if (initialCommand) setCommand(initialCommand);
       setGithubUrl('');
       setStagedFiles([]);
@@ -161,7 +180,7 @@ export const GithubUploadDeployModal: React.FC<GithubUploadDeployModalProps> = (
     setIsUploading(true);
     setUploadProgress(
       lang === 'fa' 
-        ? (sourceType === 'github' ? 'در حال شبیه‌سازی و دانلود مخزن گیت‌هاب...' : `در حال ارسال ${stagedFiles.length} فایل به سرور...`)
+        ? (sourceType === 'github' ? 'در حال دریافت و کلون کامل مخزن گیت‌هاب...' : `در حال ارسال ${stagedFiles.length} فایل به سرور...`)
         : (sourceType === 'github' ? 'Cloning GitHub repository...' : `Uploading ${stagedFiles.length} files to server...`)
     );
 
@@ -338,7 +357,7 @@ export const GithubUploadDeployModal: React.FC<GithubUploadDeployModalProps> = (
                   <input
                     type="text"
                     value={githubUrl}
-                    onChange={(e) => setGithubUrl(e.target.value)}
+                    onChange={(e) => handleGithubUrlChange(e.target.value)}
                     placeholder="https://github.com/username/repository"
                     className="w-full pl-9 pr-3 py-2.5 rounded-lg bg-[#0d1117] border border-neutral-700 text-neutral-200 font-mono text-xs focus:border-emerald-500 outline-none"
                   />
