@@ -916,9 +916,133 @@ app.get('/api/processes/list', async (req: Request, res: Response) => {
   });
 });
 
+function parseGithubUrl(rawUrl: string): { repoUrl: string; repoName: string } {
+  let url = rawUrl.trim();
+  url = url.replace(/\/+$/, '');
+  
+  // Match raw.githubusercontent.com
+  const rawMatch = url.match(/https?:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/.*/);
+  if (rawMatch) {
+    const username = rawMatch[1];
+    const reponame = rawMatch[2].replace(/\.git$/, '');
+    return {
+      repoUrl: `https://github.com/${username}/${reponame}.git`,
+      repoName: reponame
+    };
+  }
+
+  // Match blob or tree or raw URLs: e.g. https://github.com/username/reponame/blob/main/bot.py
+  const blobTreeMatch = url.match(/https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/(blob|tree|raw)\/.*/);
+  if (blobTreeMatch) {
+    const username = blobTreeMatch[1];
+    const reponame = blobTreeMatch[2].replace(/\.git$/, '');
+    return {
+      repoUrl: `https://github.com/${username}/${reponame}.git`,
+      repoName: reponame
+    };
+  }
+
+  // Standard repo URL: https://github.com/username/reponame or https://github.com/username/reponame.git
+  const repoMatch = url.match(/https?:\/\/github\.com\/([^\/]+)\/([^\/]+)/);
+  if (repoMatch) {
+    const username = repoMatch[1];
+    const reponame = repoMatch[2].replace(/\.git$/, '');
+    return {
+      repoUrl: `https://github.com/${username}/${reponame}.git`,
+      repoName: reponame
+    };
+  }
+
+  return { repoUrl: url, repoName: `repo_${Date.now()}` };
+}
+
+async function cloneOrUpdateGithubRepo(rawGithubUrl: string, targetWorkDir: string, logs: string[]): Promise<string> {
+  const { repoUrl, repoName } = parseGithubUrl(rawGithubUrl);
+  const workDir = targetWorkDir ? path.resolve(targetWorkDir) : path.join(process.cwd(), repoName);
+
+  logs.push(`[${new Date().toLocaleTimeString()}] Target directory: ${workDir}\n`);
+
+  const gitFolderExists = fs.existsSync(path.join(workDir, '.git'));
+
+  if (gitFolderExists) {
+    logs.push(`[${new Date().toLocaleTimeString()}] Existing Git repository found at ${workDir}. Pulling latest changes...\n`);
+    try {
+      await execAsync(`git -C "${workDir}" fetch --all`);
+      await execAsync(`git -C "${workDir}" reset --hard origin/HEAD || git -C "${workDir}" pull`);
+      logs.push(`[${new Date().toLocaleTimeString()}] Git repository updated successfully.\n`);
+    } catch (err: any) {
+      logs.push(`[WARN] git pull failed (${err.message}). Cleaning folder and re-cloning...\n`);
+      await fsPromises.rm(workDir, { recursive: true, force: true });
+      fs.mkdirSync(workDir, { recursive: true });
+      await execAsync(`git clone "${repoUrl}" "${workDir}"`);
+      logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
+    }
+  } else {
+    if (fs.existsSync(workDir)) {
+      logs.push(`[${new Date().toLocaleTimeString()}] Directory ${workDir} exists but is not a Git repository. Cleaning directory for fresh clone...\n`);
+      await fsPromises.rm(workDir, { recursive: true, force: true });
+    }
+    fs.mkdirSync(workDir, { recursive: true });
+    logs.push(`[${new Date().toLocaleTimeString()}] Cloning GitHub repository (${repoUrl}) into ${workDir}...\n`);
+    await execAsync(`git clone "${repoUrl}" "${workDir}"`);
+    logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
+  }
+
+  // Log all cloned files for transparency
+  try {
+    const filesInDir = fs.readdirSync(workDir);
+    logs.push(`[${new Date().toLocaleTimeString()}] Total ${filesInDir.length} files/folders cloned: ${filesInDir.join(', ')}\n`);
+  } catch {}
+
+  return workDir;
+}
+
+function autoDetectCommand(rawCommand: string, workDir: string, logs: string[]): string {
+  let cmd = rawCommand ? rawCommand.trim() : '';
+
+  // If command is empty or default 'python3 main.py' or 'python main.py'
+  if (!cmd || cmd === 'python3 main.py' || cmd === 'python main.py') {
+    const mainPyExists = fs.existsSync(path.join(workDir, 'main.py'));
+    if (!mainPyExists) {
+      const candidates = ['bot.py', 'app.py', 'index.py', 'server.py', 'run.py', 'main.ts', 'index.ts', 'server.ts'];
+      for (const candidate of candidates) {
+        if (fs.existsSync(path.join(workDir, candidate))) {
+          logs.push(`[${new Date().toLocaleTimeString()}] Auto-detected entry script: ${candidate}\n`);
+          return candidate.endsWith('.py') ? `python3 ${candidate}` : `node ${candidate}`;
+        }
+      }
+      try {
+        const files = fs.readdirSync(workDir);
+        const pyFile = files.find(f => f.endsWith('.py') && !f.startsWith('.'));
+        if (pyFile) {
+          logs.push(`[${new Date().toLocaleTimeString()}] Auto-detected python script: ${pyFile}\n`);
+          return `python3 ${pyFile}`;
+        }
+      } catch {}
+    }
+  }
+
+  return cmd || 'python3 main.py';
+}
+
+function killTaskProcess(taskData: BackgroundTask, item?: { process?: ChildProcess }) {
+  const pid = item?.process?.pid || taskData.pid;
+  if (pid) {
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+    try { process.kill(-pid, 'SIGTERM'); } catch {}
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  if (taskData.cwd && taskData.cwd !== process.cwd()) {
+    try {
+      execAsync(`pkill -9 -f "${taskData.cwd}"`).catch(() => {});
+    } catch {}
+  }
+}
+
 app.post('/api/processes/run-background', tempUpload.any(), async (req: Request, res: Response) => {
   const { name, command, sourceType, githubUrl, installRequirements, cwd, targetDir } = req.body;
-  if (!command) return res.status(400).json({ error: 'Command required' });
+  if (!command && sourceType !== 'github') return res.status(400).json({ error: 'Command required' });
 
   const files = (req.files || []) as Express.Multer.File[];
   const id = 'task_' + Date.now();
@@ -926,15 +1050,20 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
 
   const logs: string[] = [`[${new Date().toLocaleTimeString()}] Preparing background task...\n`];
 
-  const taskData: BackgroundTask = {
-    id,
-    name: name || command.substring(0, 30),
-    command,
-    cwd: workDir,
-    status: 'running',
-    startedAt: new Date().toISOString(),
-    logs
-  };
+  // Stop any existing background task running in the same directory or with the same name
+  for (const [existingId, existingItem] of backgroundTasks.entries()) {
+    const isSameCwd = existingItem.task.cwd && targetDir && path.resolve(existingItem.task.cwd) === path.resolve(targetDir);
+    const isSameName = existingItem.task.name && name && existingItem.task.name.trim().toLowerCase() === name.trim().toLowerCase();
+    if ((isSameCwd || isSameName) && existingItem.task.status === 'running') {
+      logs.push(`[${new Date().toLocaleTimeString()}] Stopping previous instance of task '${existingItem.task.name}' (${existingId})...\n`);
+      killTaskProcess(existingItem.task, existingItem);
+      existingItem.task.status = 'killed';
+      existingItem.task.completedAt = new Date().toISOString();
+      existingItem.task.logs.push(`[${new Date().toLocaleTimeString()}] Stopped because a new deployment was launched.\n`);
+    }
+  }
+
+  let finalCommand = command || 'python3 main.py';
 
   try {
     // 1. Handle source (ZIP upload, Files/Folder upload, or GitHub URL)
@@ -945,10 +1074,10 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
         const originalName = zipFile.originalname || 'project.zip';
         const baseName = path.basename(originalName, path.extname(originalName)).replace(/[^a-zA-Z0-9_-]/g, '_');
         const projectDirName = baseName || `proj_${Date.now()}`;
-        workDir = path.join(process.cwd(), projectDirName);
+        workDir = targetDir || req.body.targetPath ? path.resolve(targetDir || req.body.targetPath) : path.join(process.cwd(), projectDirName);
 
         fs.mkdirSync(workDir, { recursive: true });
-        logs.push(`[${new Date().toLocaleTimeString()}] Extracting ZIP archive into folder: ${projectDirName}...\n`);
+        logs.push(`[${new Date().toLocaleTimeString()}] Extracting ZIP archive into folder: ${workDir}...\n`);
         
         try {
           await execAsync(`python3 -c "import zipfile; zipfile.ZipFile('${zipPath}', 'r').extractall('${workDir}')"`);
@@ -976,52 +1105,51 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
         safeMoveFile(file.path, destPath);
       }
     } else if (sourceType === 'github' && githubUrl) {
-      const cleanUrl = githubUrl.trim();
-      const parts = cleanUrl.replace(/\.git$/, '').split('/');
-      const repoName = parts[parts.length - 1] || `repo_${Date.now()}`;
-      const sanitizedRepoName = repoName.replace(/[^a-zA-Z0-9_-]/g, '_');
-      workDir = targetDir || req.body.targetPath ? path.resolve(targetDir || req.body.targetPath) : path.join(process.cwd(), sanitizedRepoName);
-
-      if (fs.existsSync(workDir)) {
-        logs.push(`[${new Date().toLocaleTimeString()}] Directory ${workDir} already exists, updating via git pull...\n`);
-        try {
-          await execAsync(`git -C "${workDir}" pull`);
-        } catch (err: any) {
-          logs.push(`[WARN] git pull failed: ${err.message}. Re-cloning...\n`);
-          try {
-            await fsPromises.rm(workDir, { recursive: true, force: true });
-            fs.mkdirSync(path.dirname(workDir), { recursive: true });
-            await execAsync(`git clone "${cleanUrl}" "${workDir}"`);
-          } catch (cloneErr: any) {
-            logs.push(`[ERR] Re-cloning failed: ${cloneErr.message}\n`);
-          }
-        }
-      } else {
-        logs.push(`[${new Date().toLocaleTimeString()}] Cloning GitHub repository ${cleanUrl} into ${workDir}...\n`);
-        fs.mkdirSync(path.dirname(workDir), { recursive: true });
-        await execAsync(`git clone "${cleanUrl}" "${workDir}"`);
-      }
+      workDir = await cloneOrUpdateGithubRepo(githubUrl, targetDir || req.body.targetPath, logs);
     }
 
-    taskData.cwd = workDir;
+    finalCommand = autoDetectCommand(finalCommand, workDir, logs);
 
-    // 2. Install requirements if checked
-    if ((installRequirements === 'true' || installRequirements === true) && fs.existsSync(path.join(workDir, 'requirements.txt'))) {
-      logs.push(`[${new Date().toLocaleTimeString()}] Installing dependencies from requirements.txt...\n`);
-      try {
-        const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
-        const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
-        if (stdout) logs.push(stdout);
-        if (stderr) logs.push(`[STDERR] ${stderr}`);
-        logs.push(`[${new Date().toLocaleTimeString()}] Dependencies installed successfully.\n`);
-      } catch (err: any) {
-        logs.push(`[ERR] Failed to install requirements: ${err.message}\n`);
+    const taskData: BackgroundTask = {
+      id,
+      name: name || path.basename(workDir) || finalCommand.substring(0, 30),
+      command: finalCommand,
+      cwd: workDir,
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      logs
+    };
+
+    // 2. Install requirements if checked or needed
+    if (installRequirements === 'true' || installRequirements === true || installRequirements === undefined) {
+      if (fs.existsSync(path.join(workDir, 'requirements.txt'))) {
+        logs.push(`[${new Date().toLocaleTimeString()}] Installing dependencies from requirements.txt...\n`);
+        try {
+          const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
+          const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
+          if (stdout) logs.push(stdout);
+          if (stderr) logs.push(`[STDERR] ${stderr}`);
+          logs.push(`[${new Date().toLocaleTimeString()}] Dependencies installed successfully.\n`);
+        } catch (err: any) {
+          logs.push(`[ERR] Failed to install requirements: ${err.message}\n`);
+        }
+      }
+      if (fs.existsSync(path.join(workDir, 'package.json'))) {
+        logs.push(`[${new Date().toLocaleTimeString()}] Installing Node dependencies from package.json...\n`);
+        try {
+          const { stdout, stderr } = await execAsync(`npm install`, { cwd: workDir });
+          if (stdout) logs.push(stdout);
+          if (stderr) logs.push(`[STDERR] ${stderr}`);
+          logs.push(`[${new Date().toLocaleTimeString()}] Node packages installed successfully.\n`);
+        } catch (err: any) {
+          logs.push(`[ERR] Failed to install npm packages: ${err.message}\n`);
+        }
       }
     }
 
     // 3. Launch process
-    logs.push(`[${new Date().toLocaleTimeString()}] Launching command: ${command}\n`);
-    const wrapped = await getVpnWrappedCommand(command);
+    logs.push(`[${new Date().toLocaleTimeString()}] Launching command: ${finalCommand} in ${workDir}\n`);
+    const wrapped = await getVpnWrappedCommand(finalCommand);
     const child = spawn('sh', ['-c', wrapped.command], {
       cwd: workDir,
       env: wrapped.env,
@@ -1045,7 +1173,7 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
 
     child.on('close', (code) => {
       taskData.status = code === 0 ? 'completed' : 'failed';
-      taskData.exitCode = code;
+      taskData.exitCode = code ?? undefined;
       taskData.completedAt = new Date().toISOString();
       taskData.logs.push(`[${new Date().toLocaleTimeString()}] Process exited with code ${code}\n`);
       notifyProcessExit(taskData);
@@ -1057,9 +1185,7 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
 
     res.json({ success: true, task: taskData });
   } catch (err: any) {
-    taskData.status = 'failed';
-    taskData.logs.push(`Launch error: ${err.message}\n`);
-    res.status(500).json({ error: err.message, task: taskData });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1167,6 +1293,10 @@ app.post('/api/processes/update', upload.any(), async (req: Request, res: Respon
   const taskData = item.task;
   let workDir = taskData.cwd;
 
+  // 1. Terminate the existing running process FIRST
+  taskData.logs.push(`[${new Date().toLocaleTimeString()}] Stopping running process instance for update...\n`);
+  killTaskProcess(taskData, item);
+
   if (command) {
     taskData.command = command;
   }
@@ -1174,7 +1304,7 @@ app.post('/api/processes/update', upload.any(), async (req: Request, res: Respon
   taskData.logs.push(`[${new Date().toLocaleTimeString()}] Updating project source code...\n`);
 
   try {
-    const files = req.files as Express.Multer.File[];
+    const files = (req.files || []) as Express.Multer.File[];
     if (sourceType === 'zip') {
       const file = files.find(f => f.fieldname === 'zipFile');
       if (file) {
@@ -1200,28 +1330,29 @@ app.post('/api/processes/update', upload.any(), async (req: Request, res: Respon
         safeMoveFile(file.path, destPath);
       }
     } else if (sourceType === 'github' && githubUrl) {
-      const cleanUrl = githubUrl.trim();
-      taskData.logs.push(`[${new Date().toLocaleTimeString()}] Updating GitHub repository via git pull (${cleanUrl})...\n`);
-      try {
-        await execAsync(`git -C "${workDir}" pull`);
-      } catch {
-        await execAsync(`git clone "${cleanUrl}" "${workDir}"`);
+      workDir = await cloneOrUpdateGithubRepo(githubUrl, workDir, taskData.logs);
+      taskData.cwd = workDir;
+    }
+
+    taskData.command = autoDetectCommand(taskData.command, workDir, taskData.logs);
+
+    // 2. Install / update requirements if checked
+    if (installRequirements === 'true' || installRequirements === true || installRequirements === undefined) {
+      if (fs.existsSync(path.join(workDir, 'requirements.txt'))) {
+        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Re-installing dependencies from requirements.txt...\n`);
+        const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
+        const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
+        if (stdout) taskData.logs.push(stdout);
+        if (stderr) taskData.logs.push(`[STDERR] ${stderr}`);
+        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Dependencies updated successfully.\n`);
       }
-    }
-
-    if ((installRequirements === 'true' || installRequirements === true) && fs.existsSync(path.join(workDir, 'requirements.txt'))) {
-      taskData.logs.push(`[${new Date().toLocaleTimeString()}] Re-installing dependencies from requirements.txt...\n`);
-      const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
-      const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
-      if (stdout) taskData.logs.push(stdout);
-      if (stderr) taskData.logs.push(`[STDERR] ${stderr}`);
-      taskData.logs.push(`[${new Date().toLocaleTimeString()}] Dependencies updated successfully.\n`);
-    }
-
-    if (item.process && item.process.pid) {
-      try { process.kill(-item.process.pid, 'SIGTERM'); } catch {}
-    } else if (taskData.pid) {
-      try { process.kill(-taskData.pid, 'SIGTERM'); } catch {}
+      if (fs.existsSync(path.join(workDir, 'package.json'))) {
+        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Re-installing Node dependencies from package.json...\n`);
+        const { stdout, stderr } = await execAsync(`npm install`, { cwd: workDir });
+        if (stdout) taskData.logs.push(stdout);
+        if (stderr) taskData.logs.push(`[STDERR] ${stderr}`);
+        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Node dependencies updated successfully.\n`);
+      }
     }
 
     taskData.status = 'running';
@@ -1253,7 +1384,7 @@ app.post('/api/processes/update', upload.any(), async (req: Request, res: Respon
 
     child.on('close', (code) => {
       taskData.status = code === 0 ? 'completed' : 'failed';
-      taskData.exitCode = code;
+      taskData.exitCode = code ?? undefined;
       taskData.completedAt = new Date().toISOString();
       taskData.logs.push(`[${new Date().toLocaleTimeString()}] Process exited with code ${code}\n`);
       notifyProcessExit(taskData);
