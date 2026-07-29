@@ -1,6 +1,7 @@
 # Railway Nixpacks Configuration
 [phases.setup]
 nixPkgs = [
+  "git",
   "nodejs_20",
   "python3",
   "python3Packages.pip",

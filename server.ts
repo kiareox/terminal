@@ -665,16 +665,30 @@ app.get('/api/files/list', async (req: Request, res: Response) => {
     }
 
     const files = await fsPromises.readdir(resolvedPath);
-    const systemFiles = [
-      '.git', 'node_modules', '.env', 'package.json', 'package-lock.json', 
-      'server.ts', 'vite.config.ts', 'metadata.json', '.gitignore', 
-      'tsconfig.json', 'dist', 'bun.lock', 'assets', 'public', 'src', 
-      'telegram_bot', 'user_files', '.env.example', '.serverdash_config.json', 
-      '.terminal_cwd', 'get-pip.py', 'index.html', 'nixpacks.toml', 
-      'proxychains.conf', 'railway.json', 'README.md', 'requirements.txt', 
-      'server.ts.orig', 'telegram_bot.py', 'Dockerfile'
-    ];
-    const filteredFiles = files.filter(f => !systemFiles.includes(f));
+    
+    const normalizedResolved = path.resolve(resolvedPath);
+    const normalizedCwd = path.resolve(process.cwd());
+    const isRootAppDir = (
+      normalizedResolved === normalizedCwd ||
+      normalizedResolved === '/app' ||
+      normalizedResolved === '/app/applet'
+    );
+
+    let filteredFiles = files;
+    if (isRootAppDir) {
+      const systemFiles = [
+        '.git', 'node_modules', '.env', 'package.json', 'package-lock.json', 
+        'server.ts', 'vite.config.ts', 'metadata.json', '.gitignore', 
+        'tsconfig.json', 'dist', 'bun.lock', 'assets', 'public', 'src', 
+        'telegram_bot', 'user_files', '.env.example', '.serverdash_config.json', 
+        '.terminal_cwd', 'get-pip.py', 'index.html', 'nixpacks.toml', 
+        'proxychains.conf', 'railway.json', 'README.md', 'requirements.txt', 
+        'server.ts.orig', 'telegram_bot.py', 'Dockerfile'
+      ];
+      filteredFiles = files.filter(f => !systemFiles.includes(f));
+    } else {
+      filteredFiles = files.filter(f => f !== '.git');
+    }
     const items = await Promise.all(
       filteredFiles.map(async (name) => {
         const itemPath = path.join(resolvedPath, name);
@@ -956,6 +970,68 @@ function parseGithubUrl(rawUrl: string): { repoUrl: string; repoName: string } {
   return { repoUrl: url, repoName: `repo_${Date.now()}` };
 }
 
+async function getBestPipCommand(logs?: string[]): Promise<string> {
+  const candidateCmds = [
+    'pip3',
+    'pip',
+    '/usr/local/bin/pip3',
+    '/usr/local/bin/pip',
+    '/root/.local/bin/pip',
+    'python3 -m pip'
+  ];
+
+  for (const cmd of candidateCmds) {
+    try {
+      await execAsync(`${cmd} --version`);
+      return cmd;
+    } catch {}
+  }
+
+  if (logs) logs.push(`[${new Date().toLocaleTimeString()}] pip module not found. Auto-installing pip...\n`);
+  
+  try {
+    const getPipScript = `import urllib.request; urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", "/tmp/get-pip.py")`;
+    await execAsync(`python3 -c '${getPipScript}' || curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py`);
+    await execAsync(`python3 /tmp/get-pip.py --break-system-packages`);
+    if (logs) logs.push(`[${new Date().toLocaleTimeString()}] pip installed successfully.\n`);
+
+    for (const cmd of candidateCmds) {
+      try {
+        await execAsync(`${cmd} --version`);
+        return cmd;
+      } catch {}
+    }
+  } catch (err: any) {
+    if (logs) logs.push(`[WARN] Auto-installing pip failed: ${err.message}\n`);
+  }
+
+  return 'python3 -m pip';
+}
+
+async function installPythonRequirements(workDir: string, logs: string[]): Promise<void> {
+  if (!fs.existsSync(path.join(workDir, 'requirements.txt'))) return;
+
+  logs.push(`[${new Date().toLocaleTimeString()}] Installing dependencies from requirements.txt...\n`);
+  const pipCmd = await getBestPipCommand(logs);
+
+  try {
+    const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
+    if (stdout) logs.push(stdout);
+    if (stderr) logs.push(`[STDERR] ${stderr}`);
+    logs.push(`[${new Date().toLocaleTimeString()}] Dependencies installed successfully.\n`);
+  } catch (firstErr: any) {
+    try {
+      logs.push(`[WARN] Standard install failed (${firstErr.message}), trying without --break-system-packages...\n`);
+      const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt`, { cwd: workDir });
+      if (stdout) logs.push(stdout);
+      if (stderr) logs.push(`[STDERR] ${stderr}`);
+      logs.push(`[${new Date().toLocaleTimeString()}] Dependencies installed successfully.\n`);
+    } catch (err: any) {
+      logs.push(`[ERR] Failed to install requirements: ${err.message}\n`);
+    }
+  }
+}
+
 async function downloadGithubZipArchive(rawGithubUrl: string, workDir: string, logs: string[]): Promise<boolean> {
   const { repoUrl, repoName } = parseGithubUrl(rawGithubUrl);
   const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
@@ -1216,18 +1292,7 @@ app.post('/api/processes/run-background', tempUpload.any(), async (req: Request,
 
     // 2. Install requirements if checked or needed
     if (installRequirements === 'true' || installRequirements === true || installRequirements === undefined) {
-      if (fs.existsSync(path.join(workDir, 'requirements.txt'))) {
-        logs.push(`[${new Date().toLocaleTimeString()}] Installing dependencies from requirements.txt...\n`);
-        try {
-          const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
-          const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
-          if (stdout) logs.push(stdout);
-          if (stderr) logs.push(`[STDERR] ${stderr}`);
-          logs.push(`[${new Date().toLocaleTimeString()}] Dependencies installed successfully.\n`);
-        } catch (err: any) {
-          logs.push(`[ERR] Failed to install requirements: ${err.message}\n`);
-        }
-      }
+      await installPythonRequirements(workDir, logs);
       if (fs.existsSync(path.join(workDir, 'package.json'))) {
         logs.push(`[${new Date().toLocaleTimeString()}] Installing Node dependencies from package.json...\n`);
         try {
@@ -1432,14 +1497,7 @@ app.post('/api/processes/update', upload.any(), async (req: Request, res: Respon
 
     // 2. Install / update requirements if checked
     if (installRequirements === 'true' || installRequirements === true || installRequirements === undefined) {
-      if (fs.existsSync(path.join(workDir, 'requirements.txt'))) {
-        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Re-installing dependencies from requirements.txt...\n`);
-        const pipCmd = fs.existsSync('/root/.local/bin/pip') ? '/root/.local/bin/pip' : 'python3 -m pip';
-        const { stdout, stderr } = await execAsync(`${pipCmd} install -r requirements.txt --break-system-packages`, { cwd: workDir });
-        if (stdout) taskData.logs.push(stdout);
-        if (stderr) taskData.logs.push(`[STDERR] ${stderr}`);
-        taskData.logs.push(`[${new Date().toLocaleTimeString()}] Dependencies updated successfully.\n`);
-      }
+      await installPythonRequirements(workDir, taskData.logs);
       if (fs.existsSync(path.join(workDir, 'package.json'))) {
         taskData.logs.push(`[${new Date().toLocaleTimeString()}] Re-installing Node dependencies from package.json...\n`);
         const { stdout, stderr } = await execAsync(`npm install`, { cwd: workDir });
