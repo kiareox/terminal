@@ -1,0 +1,21 @@
+# Railway Nixpacks Configuration
+[phases.setup]
+nixPkgs = [
+  "git",
+  "nodejs_20",
+  "python3",
+  "python3Packages.pip",
+  "ffmpeg",
+  "curl",
+  "unzip",
+  "cacert",
+  "proxychains-ng",
+  "tini",
+  "procps"
+]
+
+[phases.install]
+cmds = [
+  "npm install",
+  "pip install -r requirements.txt"
+]

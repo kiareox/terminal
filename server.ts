@@ -956,6 +956,84 @@ function parseGithubUrl(rawUrl: string): { repoUrl: string; repoName: string } {
   return { repoUrl: url, repoName: `repo_${Date.now()}` };
 }
 
+async function downloadGithubZipArchive(rawGithubUrl: string, workDir: string, logs: string[]): Promise<boolean> {
+  const { repoUrl, repoName } = parseGithubUrl(rawGithubUrl);
+  const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+  if (!match) return false;
+
+  const username = match[1];
+  const reponame = match[2].replace(/\.git$/, '');
+
+  const zipUrls = [
+    `https://github.com/${username}/${reponame}/archive/refs/heads/main.zip`,
+    `https://github.com/${username}/${reponame}/archive/refs/heads/master.zip`,
+    `https://codeload.github.com/${username}/${reponame}/zip/refs/heads/main`,
+    `https://codeload.github.com/${username}/${reponame}/zip/refs/heads/master`
+  ];
+
+  const tmpZipPath = path.join('/tmp', `repo_${Date.now()}.zip`);
+  const tmpExtractDir = path.join('/tmp', `ext_${Date.now()}`);
+
+  logs.push(`[${new Date().toLocaleTimeString()}] Attempting direct ZIP download from GitHub for ${username}/${reponame}...\n`);
+
+  let downloaded = false;
+  for (const zipUrl of zipUrls) {
+    try {
+      logs.push(`[${new Date().toLocaleTimeString()}] Downloading ${zipUrl}...\n`);
+      const pyDownloadScript = `import urllib.request; urllib.request.urlretrieve("${zipUrl}", "${tmpZipPath}")`;
+      await execAsync(`python3 -c '${pyDownloadScript}' || curl -L -s -o "${tmpZipPath}" "${zipUrl}"`);
+      
+      if (fs.existsSync(tmpZipPath) && fs.statSync(tmpZipPath).size > 500) {
+        downloaded = true;
+        break;
+      }
+    } catch (e: any) {
+      logs.push(`[WARN] Failed to download from ${zipUrl}: ${e.message}\n`);
+    }
+  }
+
+  if (!downloaded) {
+    logs.push(`[ERR] Could not download repository ZIP archive from GitHub.\n`);
+    return false;
+  }
+
+  try {
+    fs.mkdirSync(tmpExtractDir, { recursive: true });
+    fs.mkdirSync(workDir, { recursive: true });
+
+    // Extract zip
+    await execAsync(`python3 -c "import zipfile; zipfile.ZipFile('${tmpZipPath}', 'r').extractall('${tmpExtractDir}')"`);
+
+    // Find extracted directory (usually repoName-main or repoName-master)
+    const extractedItems = fs.readdirSync(tmpExtractDir);
+    let sourceFolder = tmpExtractDir;
+    if (extractedItems.length === 1 && fs.statSync(path.join(tmpExtractDir, extractedItems[0])).isDirectory()) {
+      sourceFolder = path.join(tmpExtractDir, extractedItems[0]);
+    }
+
+    // Move or copy all files to workDir
+    const filesToCopy = fs.readdirSync(sourceFolder);
+    for (const item of filesToCopy) {
+      const srcItem = path.join(sourceFolder, item);
+      const destItem = path.join(workDir, item);
+      if (fs.existsSync(destItem)) {
+        await fsPromises.rm(destItem, { recursive: true, force: true });
+      }
+      await fsPromises.cp(srcItem, destItem, { recursive: true });
+    }
+
+    logs.push(`[${new Date().toLocaleTimeString()}] Repository archive extracted successfully into ${workDir}.\n`);
+
+    // Cleanup
+    await fsPromises.rm(tmpZipPath, { force: true }).catch(() => {});
+    await fsPromises.rm(tmpExtractDir, { recursive: true, force: true }).catch(() => {});
+    return true;
+  } catch (err: any) {
+    logs.push(`[ERR] ZIP Extraction error: ${err.message}\n`);
+    return false;
+  }
+}
+
 async function cloneOrUpdateGithubRepo(rawGithubUrl: string, targetWorkDir: string, logs: string[]): Promise<string> {
   const { repoUrl, repoName } = parseGithubUrl(rawGithubUrl);
   const workDir = targetWorkDir ? path.resolve(targetWorkDir) : path.join(process.cwd(), repoName);
@@ -971,27 +1049,43 @@ async function cloneOrUpdateGithubRepo(rawGithubUrl: string, targetWorkDir: stri
       await execAsync(`git -C "${workDir}" reset --hard origin/HEAD || git -C "${workDir}" pull`);
       logs.push(`[${new Date().toLocaleTimeString()}] Git repository updated successfully.\n`);
     } catch (err: any) {
-      logs.push(`[WARN] git pull failed (${err.message}). Cleaning folder and re-cloning...\n`);
-      await fsPromises.rm(workDir, { recursive: true, force: true });
-      fs.mkdirSync(workDir, { recursive: true });
-      await execAsync(`git clone "${repoUrl}" "${workDir}"`);
-      logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
+      logs.push(`[WARN] git pull failed (${err.message}). Trying ZIP download fallback...\n`);
+      const zipSuccess = await downloadGithubZipArchive(rawGithubUrl, workDir, logs);
+      if (!zipSuccess) {
+        logs.push(`[WARN] Cleaning folder and retrying git clone...\n`);
+        await fsPromises.rm(workDir, { recursive: true, force: true });
+        fs.mkdirSync(workDir, { recursive: true });
+        await execAsync(`git clone "${repoUrl}" "${workDir}"`);
+        logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
+      }
     }
   } else {
-    if (fs.existsSync(workDir)) {
-      logs.push(`[${new Date().toLocaleTimeString()}] Directory ${workDir} exists but is not a Git repository. Cleaning directory for fresh clone...\n`);
-      await fsPromises.rm(workDir, { recursive: true, force: true });
+    try {
+      if (fs.existsSync(workDir)) {
+        logs.push(`[${new Date().toLocaleTimeString()}] Preparing directory ${workDir} for clone...\n`);
+      } else {
+        fs.mkdirSync(workDir, { recursive: true });
+      }
+      logs.push(`[${new Date().toLocaleTimeString()}] Cloning GitHub repository (${repoUrl}) into ${workDir}...\n`);
+      await execAsync(`git clone "${repoUrl}" "${workDir}"`);
+      logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
+    } catch (cloneErr: any) {
+      logs.push(`[WARN] git clone failed (${cloneErr.message}). Using direct ZIP download fallback...\n`);
+      if (fs.existsSync(workDir)) {
+        await fsPromises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      }
+      fs.mkdirSync(workDir, { recursive: true });
+      const zipSuccess = await downloadGithubZipArchive(rawGithubUrl, workDir, logs);
+      if (!zipSuccess) {
+        throw new Error(`Failed to clone git repository and ZIP fallback failed: ${cloneErr.message}`);
+      }
     }
-    fs.mkdirSync(workDir, { recursive: true });
-    logs.push(`[${new Date().toLocaleTimeString()}] Cloning GitHub repository (${repoUrl}) into ${workDir}...\n`);
-    await execAsync(`git clone "${repoUrl}" "${workDir}"`);
-    logs.push(`[${new Date().toLocaleTimeString()}] Repository cloned successfully into ${workDir}.\n`);
   }
 
   // Log all cloned files for transparency
   try {
     const filesInDir = fs.readdirSync(workDir);
-    logs.push(`[${new Date().toLocaleTimeString()}] Total ${filesInDir.length} files/folders cloned: ${filesInDir.join(', ')}\n`);
+    logs.push(`[${new Date().toLocaleTimeString()}] Total ${filesInDir.length} files/folders downloaded: ${filesInDir.join(', ')}\n`);
   } catch {}
 
   return workDir;
