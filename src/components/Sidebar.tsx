@@ -1,9 +1,9 @@
 import React from 'react';
-import { Activity, Terminal as TerminalIcon, FolderOpen, Cpu, FileText, BookOpen, Shield, Globe, Bot } from 'lucide-react';
+import { Activity, Terminal as TerminalIcon, FolderOpen, Cpu, BookOpen, Globe, Bot } from 'lucide-react';
 import { Language } from '../types';
 import { translations } from '../locales/translations';
 
-export type ActiveTab = 'monitoring' | 'terminal' | 'fileManager' | 'processManager' | 'systemLogs' | 'telegramBot' | 'vpnManager' | 'documentation' | 'securitySettings';
+export type ActiveTab = 'monitoring' | 'terminal' | 'fileManager' | 'processManager' | 'telegramBot' | 'vpnManager' | 'documentation';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -19,11 +19,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, lang }
     { id: 'terminal' as ActiveTab, label: t.terminal, icon: TerminalIcon, color: 'text-blue-500' },
     { id: 'fileManager' as ActiveTab, label: t.fileManager, icon: FolderOpen, color: 'text-amber-500' },
     { id: 'processManager' as ActiveTab, label: t.processManager, icon: Cpu, color: 'text-purple-500' },
-    { id: 'systemLogs' as ActiveTab, label: t.systemLogs, icon: FileText, color: 'text-rose-500' },
     { id: 'telegramBot' as ActiveTab, label: t.telegramBot, icon: Bot, color: 'text-sky-500' },
     { id: 'vpnManager' as ActiveTab, label: t.vpnManager, icon: Globe, color: 'text-indigo-500' },
     { id: 'documentation' as ActiveTab, label: t.documentation, icon: BookOpen, color: 'text-teal-500' },
-    { id: 'securitySettings' as ActiveTab, label: t.securitySettings, icon: Shield, color: 'text-indigo-400' },
   ];
 
 

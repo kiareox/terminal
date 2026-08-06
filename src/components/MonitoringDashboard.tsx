@@ -110,9 +110,9 @@ export const MonitoringDashboard: React.FC<MonitoringDashboardProps> = ({ token,
       </div>
 
       {/* Bento Grid layout for Metric Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="flex overflow-x-auto gap-4 pb-2 scrollbar-thin lg:grid lg:grid-cols-4">
         {/* CPU Card */}
-        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between">
+        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between min-w-[240px] lg:min-w-0 flex-1 shrink-0">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
               {t.cpuUsage}
@@ -138,7 +138,7 @@ export const MonitoringDashboard: React.FC<MonitoringDashboardProps> = ({ token,
         </div>
 
         {/* RAM Card */}
-        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between">
+        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between min-w-[240px] lg:min-w-0 flex-1 shrink-0">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
               {t.ramUsage}
@@ -164,7 +164,7 @@ export const MonitoringDashboard: React.FC<MonitoringDashboardProps> = ({ token,
         </div>
 
         {/* Disk Card */}
-        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between">
+        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between min-w-[240px] lg:min-w-0 flex-1 shrink-0">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
               {t.diskUsage}
@@ -190,7 +190,7 @@ export const MonitoringDashboard: React.FC<MonitoringDashboardProps> = ({ token,
         </div>
 
         {/* Network & Uptime Card */}
-        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between">
+        <div className="p-4 rounded-2xl border border-neutral-200 dark:border-white/10 bg-white dark:bg-[#121214] shadow-2xl relative overflow-hidden flex flex-col justify-between min-w-[240px] lg:min-w-0 flex-1 shrink-0">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
               {t.uptime}

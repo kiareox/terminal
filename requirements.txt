@@ -23,3 +23,6 @@ ffmpeg-python
 curl-cffi
 python-telegram-bot
 PySocks
+socksio
+httpx[socks]
+aiohttp-socks

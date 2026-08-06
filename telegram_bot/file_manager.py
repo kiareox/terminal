@@ -118,15 +118,26 @@ class FileManager:
                 return [], "❌ این یک پوشه نیست"
             
             files = []
-            hidden_files = [
-                'assets', 'dist', 'node_modules', 'public', 'src', 'telegram_bot', 
-                'user_files', '.env.example', '.serverdash_config.json', '.terminal_cwd', 
-                'get-pip.py', 'index.html', 'nixpacks.toml', 'proxychains.conf', 
-                'railway.json', 'README.md', 'requirements.txt', 'server.ts.orig', 
-                'telegram_bot.py', '.gitignore', 'bun.lock', 'metadata.json', 
-                'package.json', 'server.ts', 'tsconfig.json', 'vite.config.ts', 'Dockerfile'
-            ]
-            entries = sorted([e for e in directory.iterdir() if e.name not in hidden_files], key=lambda x: (not x.is_dir(), x.name.lower()))
+            dir_resolved = directory.resolve()
+            base_resolved = self.base_dir.resolve()
+            
+            is_root = (
+                dir_resolved == base_resolved or
+                str(dir_resolved) in ['/app', '/app/applet']
+            )
+
+            if is_root:
+                hidden_files = [
+                    'assets', 'dist', 'node_modules', 'public', 'src', 'telegram_bot', 
+                    'user_files', '.env.example', '.serverdash_config.json', '.terminal_cwd', 
+                    'get-pip.py', 'index.html', 'nixpacks.toml', 'proxychains.conf', 
+                    'railway.json', 'README.md', 'requirements.txt', 'server.ts.orig', 
+                    'telegram_bot.py', '.gitignore', 'bun.lock', 'metadata.json', 
+                    'package.json', 'server.ts', 'tsconfig.json', 'vite.config.ts', 'Dockerfile'
+                ]
+                entries = sorted([e for e in directory.iterdir() if e.name not in hidden_files], key=lambda x: (not x.is_dir(), x.name.lower()))
+            else:
+                entries = sorted([e for e in directory.iterdir() if e.name != '.git'], key=lambda x: (not x.is_dir(), x.name.lower()))
             
             for entry in entries:
                 try:

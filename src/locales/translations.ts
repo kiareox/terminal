@@ -87,6 +87,14 @@ export const translations = {
     selectedCount: '{count} مورد انتخاب شده',
     deleteSelected: 'حذف موارد انتخاب‌شده',
     selectAll: 'انتخاب همه',
+    deselectAll: 'لغو انتخاب',
+    databaseViewer: 'نمایشگر دیتابیس',
+    tables: 'جدول‌ها',
+    selectTable: 'انتخاب جدول',
+    noTables: 'هیچ جدولی در این دیتابیس وجود ندارد.',
+    databaseError: 'خطا در بارگذاری دیتابیس',
+    loadingDb: 'در حال بارگذاری اطلاعات دیتابیس...',
+    rowsCount: 'تعداد {count} ردیف',
 
     // Process & Script Manager
     backgroundTasks: 'اسکریپت‌ها و پردازش‌های پس‌زمینه',
@@ -231,6 +239,14 @@ export const translations = {
     selectedCount: '{count} items selected',
     deleteSelected: 'Delete Selected',
     selectAll: 'Select All',
+    deselectAll: 'Deselect All',
+    databaseViewer: 'Database Viewer',
+    tables: 'Tables',
+    selectTable: 'Select Table',
+    noTables: 'No tables found in this database.',
+    databaseError: 'Error loading database',
+    loadingDb: 'Loading database info...',
+    rowsCount: '{count} rows',
 
     // Process & Script Manager
     backgroundTasks: 'Background Scripts & Process Runner',

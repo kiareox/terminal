@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import os from 'os';
-import { exec, spawn, ChildProcess } from 'child_process';
+import { exec, execFile, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import cors from 'cors';
 import multer from 'multer';
@@ -17,6 +17,7 @@ const archiver = req('archiver');
 
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function safeMoveFile(src: string, dest: string) {
   try {
@@ -118,8 +119,9 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
   }
   const authHeader = req.headers.authorization;
   const tokenHeader = req.headers['x-auth-token'] as string;
+  const tokenQuery = req.query.token as string;
 
-  const token = authHeader ? authHeader.replace('Bearer ', '') : tokenHeader;
+  const token = authHeader ? authHeader.replace('Bearer ', '') : (tokenHeader || tokenQuery);
 
   if (token && token === serverConfig.authToken) {
     return next();
@@ -742,6 +744,131 @@ app.get('/api/files/read', async (req: Request, res: Response) => {
     }
     const content = await fsPromises.readFile(filePath, 'utf-8');
     res.json({ path: filePath, content });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SQLite DB File reading endpoints (Python backed for universal Node.js compatibility)
+app.get('/api/sqlite/tables', async (req: Request, res: Response) => {
+  try {
+    const dbPath = req.query.path as string;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: 'Database file not found' });
+    }
+    const pyScript = `import sqlite3, json, sys
+conn = sqlite3.connect(sys.argv[1])
+cursor = conn.cursor()
+cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+rows = cursor.fetchall()
+conn.close()
+print(json.dumps([r[0] for r in rows]))`;
+
+    const { stdout } = await execFileAsync('python3', ['-c', pyScript, dbPath]);
+    const tables = JSON.parse(stdout.trim());
+    res.json({ tables });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/sqlite/table-data', async (req: Request, res: Response) => {
+  try {
+    const dbPath = req.query.path as string;
+    const table = req.query.table as string;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: 'Database file not found' });
+    }
+    if (!table) {
+      return res.status(400).json({ error: 'Table name is required' });
+    }
+    const limitParam = req.query.limit as string;
+    const limit = (limitParam && !isNaN(parseInt(limitParam, 10))) ? parseInt(limitParam, 10) : 0;
+
+    const pyScript = `import sqlite3, json, sys
+db_path = sys.argv[1]
+table_name = sys.argv[2]
+limit = int(sys.argv[3])
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+cursor = conn.cursor()
+
+cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (table_name,))
+if not cursor.fetchone():
+    conn.close()
+    print(json.dumps({"error": "Invalid table name"}))
+    sys.exit(0)
+
+cursor.execute(f'PRAGMA table_info("{table_name}")')
+columns = [{"name": r[1], "type": r[2]} for r in cursor.fetchall()]
+
+if limit > 0:
+    cursor.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}')
+else:
+    cursor.execute(f'SELECT * FROM "{table_name}"')
+
+rows = [dict(r) for r in cursor.fetchall()]
+conn.close()
+
+print(json.dumps({"columns": columns, "rows": rows}))`;
+
+    const { stdout } = await execFileAsync('python3', ['-c', pyScript, dbPath, table, String(limit)], { maxBuffer: 1024 * 1024 * 500 });
+    const result = JSON.parse(stdout.trim());
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sqlite/execute', async (req: Request, res: Response) => {
+  try {
+    const { dbPath, sql, params } = req.body;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      return res.status(404).json({ error: 'Database file not found' });
+    }
+    if (!sql || typeof sql !== 'string') {
+      return res.status(400).json({ error: 'SQL query string is required' });
+    }
+
+    const pyScript = `import sqlite3, json, sys
+
+db_path = sys.argv[1]
+sql_query = sys.argv[2]
+raw_params = sys.argv[3] if len(sys.argv) > 3 else "[]"
+
+try:
+    params = json.loads(raw_params)
+except:
+    params = []
+
+try:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(sql_query, params)
+    conn.commit()
+    
+    if cursor.description:
+        cols = [{"name": col[0]} for col in cursor.description]
+        rows = [dict(r) for r in cursor.fetchall()]
+        res = {"success": True, "type": "select", "columns": cols, "rows": rows, "changes": len(rows)}
+    else:
+        res = {"success": True, "type": "exec", "changes": cursor.rowcount if cursor.rowcount >= 0 else conn.total_changes}
+    conn.close()
+    print(json.dumps(res))
+except Exception as e:
+    print(json.dumps({"success": False, "error": str(e)}))`;
+
+    const { stdout } = await execFileAsync('python3', ['-c', pyScript, dbPath, sql, JSON.stringify(params || [])], { maxBuffer: 1024 * 1024 * 500 });
+    const result = JSON.parse(stdout.trim());
+    if (!result.success) {
+      return res.status(400).json({ error: result.error });
+    }
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1382,6 +1509,39 @@ app.post('/api/processes/kill', (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/processes/remove', (req: Request, res: Response) => {
+  const { id } = req.body;
+  if (!id) {
+    return res.status(400).json({ error: 'Process ID required' });
+  }
+
+  if (backgroundTasks.has(id)) {
+    const item = backgroundTasks.get(id);
+    if (item) {
+      if (item.task.status === 'running') {
+        killTaskProcess(item.task, item);
+      }
+      backgroundTasks.delete(id);
+      activeProcessesMap.delete(id);
+      return res.json({ success: true, message: 'Task removed from list' });
+    }
+  }
+
+  res.status(404).json({ error: 'Task not found' });
+});
+
+app.post('/api/processes/clear-stopped', (req: Request, res: Response) => {
+  let count = 0;
+  for (const [id, item] of backgroundTasks.entries()) {
+    if (item.task.status !== 'running') {
+      backgroundTasks.delete(id);
+      activeProcessesMap.delete(id);
+      count++;
+    }
+  }
+  res.json({ success: true, removedCount: count });
+});
+
 app.post('/api/processes/restart', async (req: Request, res: Response) => {
   const { id } = req.body;
   if (!id || !backgroundTasks.has(id)) {
@@ -1391,15 +1551,30 @@ app.post('/api/processes/restart', async (req: Request, res: Response) => {
   const item = backgroundTasks.get(id)!;
   const taskData = item.task;
 
-  if (item.process && item.process.pid) {
-    try { process.kill(-item.process.pid, 'SIGTERM'); } catch {}
-  } else if (taskData.pid) {
-    try { process.kill(-taskData.pid, 'SIGTERM'); } catch {}
+  // 1. First, stop/kill the running process completely
+  taskData.logs.push(`[${new Date().toLocaleTimeString()}] 🛑 Stopping running process for restart...\n`);
+  killTaskProcess(taskData, item);
+
+  if (activeProcessesMap.has(id)) {
+    const activeProc = activeProcessesMap.get(id);
+    if (activeProc && activeProc.pid) {
+      try { process.kill(-activeProc.pid, 'SIGKILL'); } catch {}
+      try { process.kill(activeProc.pid, 'SIGKILL'); } catch {}
+    }
+    activeProcessesMap.delete(id);
   }
 
+  taskData.status = 'killed';
+
+  // Wait 400ms to ensure process has exited and system resources are freed
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  // 2. Start process again
   taskData.status = 'running';
   taskData.startedAt = new Date().toISOString();
-  taskData.logs.push(`[${new Date().toLocaleTimeString()}] Restarting process...\n`);
+  taskData.completedAt = undefined;
+  taskData.exitCode = undefined;
+  taskData.logs.push(`[${new Date().toLocaleTimeString()}] 🚀 Restarting command: ${taskData.command}\n`);
 
   try {
     const wrapped = await getVpnWrappedCommand(taskData.command);
@@ -1412,6 +1587,7 @@ app.post('/api/processes/restart', async (req: Request, res: Response) => {
 
     taskData.pid = child.pid;
     item.process = child;
+    activeProcessesMap.set(id, child);
 
     child.stdout?.on('data', (data) => {
       const line = data.toString();
@@ -1426,8 +1602,9 @@ app.post('/api/processes/restart', async (req: Request, res: Response) => {
     });
 
     child.on('close', (code) => {
+      activeProcessesMap.delete(id);
       taskData.status = code === 0 ? 'completed' : 'failed';
-      taskData.exitCode = code;
+      taskData.exitCode = code ?? undefined;
       taskData.completedAt = new Date().toISOString();
       taskData.logs.push(`[${new Date().toLocaleTimeString()}] Process exited with code ${code}\n`);
       notifyProcessExit(taskData);
@@ -1759,6 +1936,11 @@ app.post('/api/telegram-bot/start', async (req: Request, res: Response) => {
       startedAt: new Date().toISOString(),
       logs: [`[${new Date().toLocaleTimeString()}] در حال راه‌اندازی ربات تلگرام...\n`]
     };
+
+    backgroundTasks.set('telegram_bot_process', { task: taskData });
+
+    // Ensure python dependencies (aiohttp, etc.) are installed
+    await installPythonRequirements(TELEGRAM_BOT_DIR, taskData.logs);
 
     const child = spawn('python3', ['telegram_bot.py'], {
       cwd: TELEGRAM_BOT_DIR,

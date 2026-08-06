@@ -24,11 +24,8 @@ RUN ARCH=$(dpkg --print-architecture) \
         armhf) XRAY_ARCH="arm32-v7a" ;; \
         *)     XRAY_ARCH="64" ;; \
     esac \
-    && XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-        | grep '"tag_name"' | cut -d'"' -f4) \
-    && if [ -z "$XRAY_VERSION" ]; then XRAY_VERSION="v24.11.30"; fi \
-    && curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${XRAY_ARCH}.zip" \
-        -o /tmp/xray.zip \
+    && (curl -fsSL "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${XRAY_ARCH}.zip" -o /tmp/xray.zip \
+        || curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-${XRAY_ARCH}.zip" -o /tmp/xray.zip) \
     && unzip -q /tmp/xray.zip -d /tmp/xray \
     && mv /tmp/xray/xray /usr/local/bin/xray \
     && chmod +x /usr/local/bin/xray \
@@ -44,12 +41,12 @@ COPY . .
 
 # Install Python requirements (root requirements.txt & telegram bot requirements)
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt || pip3 install --no-cache-dir -r requirements.txt
-RUN if [ -f "telegram bot/requirements.txt" ]; then pip3 install --no-cache-dir --break-system-packages -r "telegram bot/requirements.txt" || pip3 install --no-cache-dir -r "telegram bot/requirements.txt"; fi
+RUN if [ -f "telegram_bot/requirements.txt" ]; then pip3 install --no-cache-dir --break-system-packages -r "telegram_bot/requirements.txt" || pip3 install --no-cache-dir -r "telegram_bot/requirements.txt"; fi
 
 # Copy proxychains configuration
-RUN if [ -f "telegram bot/proxychains.conf" ]; then \
-      cp "telegram bot/proxychains.conf" /etc/proxychains4.conf && \
-      cp "telegram bot/proxychains.conf" /etc/proxychains.conf; \
+RUN if [ -f "telegram_bot/proxychains.conf" ]; then \
+      cp "telegram_bot/proxychains.conf" /etc/proxychains4.conf && \
+      cp "telegram_bot/proxychains.conf" /etc/proxychains.conf; \
     elif [ -f "proxychains.conf" ]; then \
       cp proxychains.conf /etc/proxychains4.conf && \
       cp proxychains.conf /etc/proxychains.conf; \

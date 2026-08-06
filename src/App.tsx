@@ -6,7 +6,6 @@ import { MonitoringDashboard } from './components/MonitoringDashboard';
 import { TerminalView } from './components/TerminalView';
 import { FileManager } from './components/FileManager';
 import { ProcessManager } from './components/ProcessManager';
-import { LogsViewer } from './components/LogsViewer';
 import { TelegramBotManager } from './components/TelegramBotManager';
 import { VpnManager } from './components/VpnManager';
 import { DocumentationView } from './components/DocumentationView';
@@ -139,9 +138,6 @@ export default function App() {
           <div className={activeTab === 'processManager' ? '' : 'hidden'}>
             <ProcessManager token={auth.token} lang={lang} />
           </div>
-          <div className={activeTab === 'systemLogs' ? '' : 'hidden'}>
-            <LogsViewer token={auth.token} lang={lang} />
-          </div>
           <div className={activeTab === 'telegramBot' ? '' : 'hidden'}>
             <TelegramBotManager token={auth.token} lang={lang} />
           </div>
@@ -152,16 +148,6 @@ export default function App() {
           <div className={activeTab === 'documentation' ? '' : 'hidden'}>
             <DocumentationView lang={lang} />
           </div>
-          {activeTab === 'securitySettings' && (
-            <div className="p-4">
-              <button
-                onClick={() => setIsSecurityOpen(true)}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-semibold hover:bg-indigo-500 transition cursor-pointer"
-              >
-                باز کردن پنجره تنظیمات امنیتی
-              </button>
-            </div>
-          )}
         </main>
       </div>
 
